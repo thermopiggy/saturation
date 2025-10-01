@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Saturation Sort — Drag & Drop Game</title>
+<style>
+  :root{
+    --bg:#faf7f2;
+    --ui:#f1e8de;
+    --slot:#e7ddd4;
+    --ok:#2e7d32;
+    --bad:#c62828;
+    --text:#2b2b2b;
+  }
+  html,body{height:100%}
+  body{
+    margin:0;
+    font:16px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+    color:var(--text);
+    background:var(--bg);
+    display:flex;
+    flex-direction:column;
+  }
+  header{
+    padding:16px clamp(12px,3vw,28px);
+    display:flex; gap:16px; align-items:center; flex-wrap:wrap;
+    background:linear-gradient(180deg,#fff8ee, #f7efe6);
+    border-bottom:1px solid #e7ddd4;
+  }
+  h1{font-size:clamp(18px,3.6vw,24px); margin:0 8px 0 0}
+  .buttons{display:flex; gap:8px; flex-wrap:wrap}
+  button{
+    border:0; padding:10px 14px; border-radius:10px; cursor:pointer; font-weight:600;
+    background:var(--ui); box-shadow:0 1px 0 rgba(0,0,0,.04) inset;
+  }
+  button.primary{background:#ffe7c4}
+  button:active{transform:translateY(1px)}
+  .stats{margin-left:auto; display:flex; gap:16px; opacity:.85}
+  main{padding:18px clamp(12px,3vw,28px) 24px; display:grid; gap:18px}
+  /* Playground (scattered tiles) */
+  .playfield{
+    position:relative; height:min(52vh,520px);
+    background:#fff; border:1px dashed #dbc9b4; border-radius:16px;
+    overflow:hidden;
+  }
+  .tile{
+    position:absolute; width:70px; height:70px; border-radius:10px;
+    box-shadow:0 8px 18px rgba(0,0,0,.12), inset 0 0 0 2px rgba(255,255,255,.4);
+    touch-action:none; user-select:none; cursor:grab;
+  }
+  .tile:active{cursor:grabbing}
+  .tile .label{
+    position:absolute; bottom:6px; right:8px; font:700 12px/1.1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color:rgba(0,0,0,.55); text-shadow:0 1px 0 rgba(255,255,255,.5);
+    background:rgba(255,255,255,.55); padding:2px 6px; border-radius:8px;
+  }
+  /* Rack with ordered slots */
+  .rack{
+    display:grid; gap:10px;
+    grid-template-columns:repeat(16, minmax(42px,1fr));
+    background:#fff; border:1px solid #e7ddd4; padding:12px; border-radius:16px;
+  }
+  .slot{
+    height:56px; border-radius:12px; background:var(--slot);
+    outline:2px dashed rgba(0,0,0,.08); outline-offset:-6px;
+    display:grid; place-items:center; position:relative;
+    transition:background .15s ease;
+  }
+  .slot.hot{background:#fef3e0}
+  .slot.filled{outline-style:solid; outline-color:rgba(0,0,0,.12)}
+  .slot .sMark{
+    font:700 10px/1 ui-monospace, monospace; opacity:.6; position:absolute; top:6px; left:8px;
+  }
+  footer{padding:10px 18px 22px; text-align:center; opacity:.7}
+  .toast{
+    position:fixed; left:50%; bottom:20px; transform:translateX(-50%);
+    background:#fff; border:1px solid #e7ddd4; padding:10px 14px; border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,.1);
+  }
+  .toast.ok{border-color:#b7deb9}
+  .toast.bad{border-color:#e6b1b1}
+</style>
+</head>
+<body>
+<header>
+  <h1>Arrange by Saturation</h1>
+  <div class="buttons">
+    <button class="primary" id="btnCheck">Check</button>
+    <button id="btnShuffle">Shuffle</button>
+    <button id="btnRestart">Restart</button>
+  </div>
+  <div class="stats" id="stats">
+    <span>Moves: <b id="moves">0</b></span>
+    <span>Time: <b id="time">00:00</b></span>
+  </div>
+</header>
+
+<main>
+  <section class="playfield" id="playfield" aria-label="Scattered tiles area"></section>
+  <section aria-label="Order rack" class="rack" id="rack"></section>
+</main>
+
+<footer>
+  Drop tiles into the rack from left (lowest S) to right (highest S). Tip: all tiles share the same lightness; only saturation differs.
+</footer>
+
+<div id="toast" class="toast" hidden></div>
+
+<script>
+(() => {
+  const N = 16;                   // number of tiles
+  const LIGHT = 55;               // fixed lightness
+  const HUE = Math.floor(Math.random()*360); // single hue so only S varies
+  const playfield = document.getElementById('playfield');
+  const rack = document.getElementById('rack');
+  const toast = document.getElementById('toast');
+  const movesEl = document.getElementById('moves');
+  const timeEl = document.getElementById('time');
+  let tiles = [];
+  let slots = [];
+  let moves = 0;
+  let timerStart = Date.now();
+  let timerId;
+
+  function hsl(h,s,l){ return `hsl(${h} ${s}% ${l}%)`; }
+
+  function generateTiles(){
+    tiles = [];
+    const sats = Array.from({length:N}, (_,i)=> Math.round( (i+1)* (95/(N)) )); // 6%..95% approx
+    // ensure unique & shuffled
+    for(const s of sats){
+      const id = crypto.randomUUID();
+      tiles.push({ id, s, color: hsl(HUE, s, LIGHT), el:null, inSlot:null });
+    }
+    shuffleInPlace(tiles);
+  }
+
+  function buildRack(){
+    rack.innerHTML = '';
+    slots = [];
+    for(let i=0;i<N;i++){
+      const slot = document.createElement('div');
+      slot.className = 'slot';
+      slot.dataset.index = i;
+      const targetS = Math.round((i+1)* (95/(N)));
+      slot.dataset.targetS = targetS;
+      const mark = document.createElement('div');
+      mark.className='sMark';
+      mark.textContent = `S${targetS}`;
+      slot.appendChild(mark);
+      rack.appendChild(slot);
+      slots.push({el:slot, tile:null, targetS});
+    }
+  }
+
+  function scatterTiles(){
+    playfield.innerHTML = '';
+    const pfRect = playfield.getBoundingClientRect();
+    const pad = 12;
+    tiles.forEach(t=>{
+      const el = document.createElement('div');
+      el.className = 'tile';
+      el.style.background = t.color;
+      const lab = document.createElement('div');
+      lab.className='label';
+      lab.textContent = `S${t.s}`;
+      el.appendChild(lab);
+      playfield.appendChild(el);
+      // random position
+      const x = Math.random()*(pfRect.width-90)+pad;
+      const y = Math.random()*(pfRect.height-90)+pad;
+      setTranslate(el, x, y);
+      enableDrag(el, t);
+      t.el = el;
+      t.inSlot = null;
+    });
+  }
+
+  function setTranslate(el,x,y){
+    el.style.transform = `translate(${x}px, ${y}px)`;
+    el.dataset.x = x; el.dataset.y = y;
+  }
+
+  function enableDrag(el, tile){
+    let startX=0,startY=0, originX=0, originY=0, dragging=false;
+
+    el.addEventListener('pointerdown', (e)=>{
+      e.preventDefault();
+      dragging=true;
+      el.setPointerCapture(e.pointerId);
+      startX = e.clientX; startY = e.clientY;
+      originX = parseFloat(el.dataset.x||'0'); originY = parseFloat(el.dataset.y||'0');
+      el.style.transition='none';
+      el.style.zIndex = 10;
+      rack.querySelectorAll('.slot').forEach(s=>s.classList.add('hot'));
+    });
+
+    el.addEventListener('pointermove', (e)=>{
+      if(!dragging) return;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      setTranslate(el, originX+dx, originY+dy);
+    });
+
+    el.addEventListener('pointerup', (e)=>{
+      if(!dragging) return;
+      dragging=false;
+      el.releasePointerCapture(e.pointerId);
+      el.style.transition='';
+      el.style.zIndex = '';
+      rack.querySelectorAll('.slot').forEach(s=>s.classList.remove('hot'));
+      // detect drop onto nearest slot (inside its bounds)
+      const dropSlot = hitTestSlot(el);
+      if(dropSlot){
+        placeInSlot(tile, dropSlot);
+        moves++; movesEl.textContent = moves;
+      }else{
+        // if it was in a slot, clear it
+        if(tile.inSlot!==null){
+          slots[tile.inSlot].tile = null;
+          rack.children[tile.inSlot].classList.remove('filled');
+          tile.inSlot=null;
+        }
+      }
+    });
+  }
+
+  function hitTestSlot(el){
+    const r = el.getBoundingClientRect();
+    let found = null;
+    slots.forEach((s,idx)=>{
+      const sr = s.el.getBoundingClientRect();
+      const overlap = !(r.right < sr.left || r.left > sr.right || r.bottom < sr.top || r.top > sr.bottom);
+      if(overlap){
+        found = idx;
+      }
+    });
+    return found;
+  }
+
+  function placeInSlot(tile, slotIdx){
+    // if slot occupied, push existing tile back to playfield random spot
+    const slot = slots[slotIdx];
+    if(slot.tile){
+      const other = slot.tile;
+      slot.tile = null;
+      rack.children[slotIdx].classList.remove('filled');
+      other.inSlot=null;
+      // send other somewhere in playfield
+      const pfRect = playfield.getBoundingClientRect();
+      setTranslate(other.el, Math.random()*(pfRect.width-90)+12, Math.random()*(pfRect.height-90)+12);
+    }
+    // if tile was in another slot, vacate it
+    if(tile.inSlot!==null){
+      slots[tile.inSlot].tile = null;
+      rack.children[tile.inSlot].classList.remove('filled');
+    }
+    slot.tile = tile;
+    tile.inSlot = slotIdx;
+    // snap tile to slot center
+    const sr = slot.el.getBoundingClientRect();
+    const pr = playfield.getBoundingClientRect();
+    // translate relative to playfield
+    const x = sr.left - pr.left + (sr.width-70)/2;
+    const y = sr.top - pr.top + (sr.height-70)/2 - (playfield.scrollTop||0);
+    setTranslate(tile.el, x, y);
+    rack.children[slotIdx].classList.add('filled');
+  }
+
+  function shuffleInPlace(a){
+    for(let i=a.length-1;i>0;i--){
+      const j = Math.floor(Math.random()*(i+1));
+      [a[i],a[j]] = [a[j],a[i]];
+    }
+  }
+
+  function checkAnswer(){
+    // Consider only slots that are filled; all must be filled
+    const filled = slots.every(s=> !!s.tile);
+    if(!filled){ return showToast('Fill all slots first.', 'bad'); }
+    const orderedS = slots.map(s=>s.tile.s);
+    const target = slots.map(s=>s.targetS);
+    const ok = orderedS.every((v,i)=> v === nearest(target[i], tiles.map(t=>t.s)));
+    showToast(ok ? 'Perfect! Correct saturation order.' : 'Not quite. Try adjusting.', ok ? 'ok' : 'bad');
+  }
+
+  // find nearest saturation value from set (because targetS may be rounded)
+  function nearest(val, arr){
+    let best = arr[0], bd = Math.abs(arr[0]-val);
+    for(const x of arr){
+      const d = Math.abs(x-val);
+      if(d<bd){ bd=d; best=x; }
+    }
+    return best;
+  }
+
+  function restart(){
+    moves = 0; movesEl.textContent='0';
+    timerStart = Date.now();
+    if(timerId) clearInterval(timerId);
+    timerId = setInterval(()=>{
+      const sec = Math.floor((Date.now()-timerStart)/1000);
+      const mm = String(Math.floor(sec/60)).padStart(2,'0');
+      const ss = String(sec%60).padStart(2,'0');
+      timeEl.textContent = `${mm}:${ss}`;
+    }, 250);
+    generateTiles();
+    buildRack();
+    requestAnimationFrame(scatterTiles);
+  }
+
+  function reshuffleScatter(){
+    // keep current tiles; just scatter those not placed
+    const pfRect = playfield.getBoundingClientRect();
+    tiles.forEach(t=>{
+      if(t.inSlot===null){
+        setTranslate(t.el, Math.random()*(pfRect.width-90)+12, Math.random()*(pfRect.height-90)+12);
+      }
+    });
+  }
+
+  function showToast(msg, type=''){
+    toast.textContent = msg;
+    toast.className = `toast ${type||''}`;
+    toast.hidden = false;
+    clearTimeout(showToast._t);
+    showToast._t = setTimeout(()=> toast.hidden=true, 1600);
+  }
+
+  // buttons
+  document.getElementById('btnCheck').addEventListener('click', checkAnswer);
+  document.getElementById('btnRestart').addEventListener('click', restart);
+  document.getElementById('btnShuffle').addEventListener('click', reshuffleScatter);
+
+  // bootstrap
+  restart();
+  // keep rack hot when dragging over
+  rack.addEventListener('pointerenter', e=>{
+    if(e.target.classList.contains('slot')) e.target.classList.add('hot');
+  }, true);
+})();
+</script>
+</body>
+</html>
